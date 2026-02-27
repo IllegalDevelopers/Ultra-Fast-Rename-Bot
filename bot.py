@@ -49,28 +49,37 @@ async def rename_file(client, message: Message):
     
     file = message.document or message.video or message.audio
     file_name = file.file_name
-    
-    new_name = file_name.replace(" ", "_")  # Simple rename logic
-    
-    thumb = await get_thumbnail(user_id)
+    new_name = file_name.replace(" ", "_")
+
+    thumb_id = await get_thumbnail(user_id)
     caption = await get_caption(user_id)
-    
+
     msg = await message.reply_text("⚡ Downloading...")
-    
+
     file_path = await message.download()
-    
     os.rename(file_path, new_name)
-    
+
+    thumb_path = None
+
+    # 🔥 FIXED THUMBNAIL SYSTEM
+    if thumb_id:
+        try:
+            thumb_path = await client.download_media(thumb_id)
+        except:
+            thumb_path = None
+
     await msg.edit("⚡ Uploading...")
-    
+
     await client.send_document(
         chat_id=message.chat.id,
         document=new_name,
         caption=caption if caption else new_name,
-        thumb=thumb
+        thumb=thumb_path
     )
-    
-    os.remove(new_name)
-    await msg.delete()
 
-app.run()
+    os.remove(new_name)
+
+    if thumb_path:
+        os.remove(thumb_path)
+
+    await msg.delete()

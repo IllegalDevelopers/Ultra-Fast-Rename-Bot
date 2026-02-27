@@ -1,4 +1,5 @@
 import os
+import time
 import humanize
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -16,7 +17,33 @@ app = Client(
 
 pending_files = {}
 
-# ---------------- VIDEO DURATION FUNCTION ---------------- #
+# ---------------- PROGRESS FUNCTION ---------------- #
+
+async def progress(current, total, message, start_time, text):
+    now = time.time()
+    diff = now - start_time
+
+    if diff == 0:
+        return
+
+    percentage = current * 100 / total
+    speed = current / diff
+    elapsed_time = round(diff)
+    total_size = humanize.naturalsize(total)
+    current_size = humanize.naturalsize(current)
+    speed_text = humanize.naturalsize(speed) + "/s"
+
+    progress_bar = "█" * int(percentage / 5) + "░" * (20 - int(percentage / 5))
+
+    await message.edit_text(
+        f"{text}\n\n"
+        f"[{progress_bar}] {round(percentage, 2)}%\n\n"
+        f"⚡ Speed: {speed_text}\n"
+        f"📦 {current_size} / {total_size}\n"
+        f"⏳ Time: {elapsed_time}s"
+    )
+
+# ---------------- VIDEO DURATION ---------------- #
 
 def get_video_duration(file_path):
     try:
@@ -31,56 +58,36 @@ def get_video_duration(file_path):
 @app.on_message(filters.command("start"))
 async def start_handler(client, message: Message):
     await message.reply_text(
-        "👋 **Super Fast Rename Bot Ready!**\n\n"
-        "1️⃣ Send File\n"
-        "2️⃣ Use `/rename newname.ext`\n\n"
-        "Commands:\n"
-        "• /setthumb (reply photo)\n"
-        "• /delthumb\n"
-        "• /setcaption Your Caption\n"
-        "• /delcaption\n\n"
+        "👋 Super Fast Rename Bot Ready!\n\n"
+        "Send file → then use:\n"
+        "/rename newname.ext\n\n"
         "Caption Variables:\n"
-        "`{filename}`\n"
-        "`{filesize}`"
+        "{filename}\n"
+        "{filesize}"
     )
 
-# ---------------- THUMBNAIL ---------------- #
+# ---------------- SETTINGS ---------------- #
 
 @app.on_message(filters.command("setthumb") & filters.reply)
 async def set_thumb(client, message: Message):
     if not message.reply_to_message.photo:
-        return await message.reply_text("❌ Reply to a photo.")
-
+        return await message.reply_text("Reply to a photo.")
     await set_thumbnail(message.from_user.id, message.reply_to_message.photo.file_id)
     await message.reply_text("✅ Thumbnail Saved!")
-
-@app.on_message(filters.command("delthumb"))
-async def del_thumb(client, message: Message):
-    await set_thumbnail(message.from_user.id, None)
-    await message.reply_text("🗑 Thumbnail Deleted!")
-
-# ---------------- CAPTION ---------------- #
 
 @app.on_message(filters.command("setcaption"))
 async def set_cap(client, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/setcaption Your Caption")
-
-    caption = message.text.split(" ", 1)[1]
-    await set_caption(message.from_user.id, caption)
+    await set_caption(message.from_user.id, message.text.split(" ",1)[1])
     await message.reply_text("✅ Caption Saved!")
-
-@app.on_message(filters.command("delcaption"))
-async def del_cap(client, message: Message):
-    await set_caption(message.from_user.id, None)
-    await message.reply_text("🗑 Caption Deleted!")
 
 # ---------------- STORE FILE ---------------- #
 
 @app.on_message(filters.document | filters.video | filters.audio)
 async def store_file(client, message: Message):
     pending_files[message.from_user.id] = message
-    await message.reply_text("📁 File Received!\nNow send:\n`/rename newname.ext`")
+    await message.reply_text("File received.\nUse:\n/rename newname.ext")
 
 # ---------------- RENAME ---------------- #
 
@@ -90,19 +97,25 @@ async def rename_file(client, message: Message):
     user_id = message.from_user.id
 
     if user_id not in pending_files:
-        return await message.reply_text("❌ Send file first.")
+        return await message.reply_text("Send file first.")
 
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/rename newname.ext")
 
-    new_name = message.text.split(" ", 1)[1]
+    new_name = message.text.split(" ",1)[1]
     original_message = pending_files[user_id]
-    file = original_message.document or original_message.video or original_message.audio
 
-    status = await message.reply_text("⚡ Downloading...")
+    status = await message.reply_text("Starting...")
 
     try:
-        file_path = await original_message.download()
+        # -------- DOWNLOAD -------- #
+        start_time = time.time()
+
+        file_path = await original_message.download(
+            progress=progress,
+            progress_args=(status, start_time, "⬇️ Downloading...")
+        )
+
         os.rename(file_path, new_name)
 
         thumb_id = await get_thumbnail(user_id)
@@ -123,9 +136,9 @@ async def rename_file(client, message: Message):
         else:
             final_caption = new_name
 
-        await status.edit("⚡ Uploading...")
+        # -------- UPLOAD -------- #
+        start_time = time.time()
 
-        # Upload Correct Media Type
         if original_message.video:
             duration = get_video_duration(new_name)
 
@@ -134,7 +147,9 @@ async def rename_file(client, message: Message):
                 video=new_name,
                 caption=final_caption,
                 thumb=thumb_path,
-                duration=duration
+                duration=duration,
+                progress=progress,
+                progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
         elif original_message.audio:
@@ -142,7 +157,9 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 audio=new_name,
                 caption=final_caption,
-                thumb=thumb_path
+                thumb=thumb_path,
+                progress=progress,
+                progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
         else:
@@ -150,21 +167,23 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 document=new_name,
                 caption=final_caption,
-                thumb=thumb_path
+                thumb=thumb_path,
+                progress=progress,
+                progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
-        # Cleanup
         os.remove(new_name)
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
 
         del pending_files[user_id]
-        await status.delete()
+
+        await status.edit_text("✅ Completed Successfully!")
 
     except Exception as e:
-        await status.edit(f"❌ Error:\n`{e}`")
+        await status.edit_text(f"Error:\n{e}")
 
 # ---------------- RUN ---------------- #
 
-print("🚀 Super Fast Rename Bot Running...")
+print("🚀 Rename Bot With Live Progress Running...")
 app.run()

@@ -1,5 +1,6 @@
 import os
 import asyncio
+import time
 from pyrogram import Client, filters
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -7,6 +8,8 @@ from pyrogram.types import (
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import *
+
+# ---------------- APP INIT ---------------- #
 
 app = Client(
     "rename-bot",
@@ -20,6 +23,7 @@ db = mongo.rename_bot
 users = db.users
 
 pending_files = {}
+last_edit_time = {}
 
 # ---------------- ADMIN CHECK ---------------- #
 
@@ -27,7 +31,50 @@ def is_admin(user_id):
     return user_id in ADMINS
 
 
-# ---------------- DATABASE FUNCTIONS ---------------- #
+# ---------------- PROGRESS BAR ---------------- #
+
+def progress_bar(current, total, start_time, task_type):
+    now = time.time()
+    diff = now - start_time
+
+    if diff == 0:
+        return None
+
+    percentage = current * 100 / total
+    speed = current / diff
+    speed_mb = speed / (1024 * 1024)
+    eta = round((total - current) / speed) if speed > 0 else 0
+
+    bar_length = 20
+    filled = int(bar_length * current // total)
+    bar = "█" * filled + "░" * (bar_length - filled)
+
+    return (
+        f"🔄 <b>{task_type}...</b>\n\n"
+        f"<code>[{bar}]</code>\n\n"
+        f"📦 {round(current/(1024*1024),2)} MB / {round(total/(1024*1024),2)} MB\n"
+        f"⚡ Speed: {round(speed_mb,2)} MB/s\n"
+        f"⏳ ETA: {eta} sec\n"
+        f"📊 {round(percentage,2)} %"
+    )
+
+
+async def safe_edit(msg, text):
+    now = time.time()
+    msg_id = msg.id
+
+    if msg_id in last_edit_time:
+        if now - last_edit_time[msg_id] < 1.5:   # 1.5 sec delay (anti flood)
+            return
+
+    last_edit_time[msg_id] = now
+    try:
+        await msg.edit(text, parse_mode=ParseMode.HTML)
+    except:
+        pass
+
+
+# ---------------- DATABASE ---------------- #
 
 async def set_thumbnail(user_id, file_path):
     await users.update_one(
@@ -54,7 +101,7 @@ async def get_caption(user_id):
 
 # ---------------- START ---------------- #
 
-@app.on_message(filters.command("start"))
+@app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
 
     if not is_admin(message.from_user.id):
@@ -81,7 +128,6 @@ async def start(client, message):
 async def thumb_info(client, message):
     if not is_admin(message.from_user.id):
         return
-
     await message.reply_text("Send a photo to set as thumbnail.")
 
 
@@ -110,7 +156,7 @@ async def set_caption_cmd(client, message):
         return await message.reply_text(
             "📝 <b>Usage:</b>\n\n"
             "<code>/setcaption Your Caption Here</code>\n\n"
-            "<b>Available Variables:</b>\n"
+            "<b>Variables:</b>\n"
             "• <code>{filename}</code>\n"
             "• <code>{filesize}</code>\n"
             "• <code>{extension}</code>\n\n"
@@ -120,7 +166,7 @@ async def set_caption_cmd(client, message):
         )
 
     await set_caption(message.from_user.id, text[1])
-    await message.reply_text("✅ Caption Format Saved Successfully!")
+    await message.reply_text("✅ Caption Format Saved!")
 
 
 # ---------------- RECEIVE FILE ---------------- #
@@ -161,12 +207,26 @@ async def rename_process(client, message):
     data = pending_files[user_id]
     new_name = message.text.strip()
 
-    msg = await message.reply_text("⚡ Downloading...")
+    progress_msg = await message.reply_text("⚡ Preparing...")
+
+    start_time = time.time()
+
+    # -------- DOWNLOAD -------- #
 
     file_path = await client.download_media(
         data["file_id"],
-        file_name=new_name
+        file_name=new_name,
+        progress=lambda current, total: asyncio.create_task(
+            safe_edit(
+                progress_msg,
+                progress_bar(current, total, start_time, "Downloading")
+            )
+        )
     )
+
+    await safe_edit(progress_msg, "🚀 <b>Uploading...</b>")
+
+    start_time = time.time()
 
     thumb_path = await get_thumbnail(user_id)
     caption_template = await get_caption(user_id)
@@ -181,21 +241,26 @@ async def rename_process(client, message):
     else:
         caption = new_name
 
-    await msg.edit("🚀 Uploading...")
+    # -------- UPLOAD -------- #
 
     await client.send_document(
         chat_id=message.chat.id,
         document=file_path,
         thumb=thumb_path if thumb_path else None,
         caption=caption,
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        progress=lambda current, total: asyncio.create_task(
+            safe_edit(
+                progress_msg,
+                progress_bar(current, total, start_time, "Uploading")
+            )
+        )
     )
 
     os.remove(file_path)
-    await msg.delete()
-
+    await progress_msg.delete()
     del pending_files[user_id]
 
 
-print("🚀 Bot Running Successfully...")
+print("🚀 Super Fast Rename Bot Running...")
 app.run()

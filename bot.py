@@ -4,6 +4,7 @@ from pyrogram import Client, filters
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton
 )
+from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import *
 
@@ -20,12 +21,18 @@ users = db.users
 
 pending_files = {}
 
-# ---------------- DATABASE ---------------- #
+# ---------------- ADMIN CHECK ---------------- #
 
-async def set_thumbnail(user_id, file_id):
+def is_admin(user_id):
+    return user_id in ADMINS
+
+
+# ---------------- DATABASE FUNCTIONS ---------------- #
+
+async def set_thumbnail(user_id, file_path):
     await users.update_one(
         {"_id": user_id},
-        {"$set": {"thumbnail": file_id}},
+        {"$set": {"thumbnail": file_path}},
         upsert=True
     )
 
@@ -45,75 +52,82 @@ async def get_caption(user_id):
     return user.get("caption") if user else None
 
 
-# ---------------- ADMIN CHECK ---------------- #
-
-def is_admin(user_id):
-    return user_id in ADMINS
-
-
 # ---------------- START ---------------- #
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
+
     if not is_admin(message.from_user.id):
+
         buttons = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("📢 Contact Admin", url="https://t.me/yourusername")]]
-        )
-        return await message.reply_text(
-            "🚫 You are not allowed to use this bot.\n\nContact Admin for access.",
-            reply_markup=buttons
+            [[InlineKeyboardButton("📞 Contact Admin", url="https://t.me/yourusername")]]
         )
 
-    await message.reply_text("🔥 Super Fast Rename Bot Ready!\n\nSend any file.")
+        return await message.reply_text(
+            "🚫 <b>You are not allowed to use this bot.</b>\n\nContact admin for access.",
+            reply_markup=buttons,
+            parse_mode=ParseMode.HTML
+        )
+
+    await message.reply_text(
+        "🔥 <b>Super Fast Rename Bot Ready!</b>\n\nSend any file to rename.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 # ---------------- SET THUMB ---------------- #
 
-@app.on_message(filters.command("setthumb"))
+@app.on_message(filters.command("setthumb") & filters.private)
 async def thumb_info(client, message):
     if not is_admin(message.from_user.id):
         return
+
     await message.reply_text("Send a photo to set as thumbnail.")
 
-@app.on_message(filters.photo)
+
+@app.on_message(filters.photo & filters.private)
 async def save_thumb(client, message):
     if not is_admin(message.from_user.id):
         return
-    
-    # Download to avoid quality loss
+
     path = await message.download()
     await set_thumbnail(message.from_user.id, path)
-    await message.reply_text("✅ Thumbnail Saved (No Quality Loss)")
+
+    await message.reply_text("✅ Thumbnail Saved Successfully (No Quality Loss)")
 
 
 # ---------------- SET CAPTION ---------------- #
 
-@app.on_message(filters.command("setcaption"))
+@app.on_message(filters.command("setcaption") & filters.private)
 async def set_caption_cmd(client, message):
+
     if not is_admin(message.from_user.id):
         return
 
     text = message.text.split(" ", 1)
+
     if len(text) < 2:
         return await message.reply_text(
-            "📝 Usage:\n\n"
-            "/setcaption Your Caption Here\n\n"
-            "Available Variables:\n"
-            "{filename} → Original File Name\n"
-            "{filesize} → File Size\n"
-            "{extension} → File Extension\n\n"
-            "Example:\n"
-            "/setcaption 📂 {filename}\n💾 Size: {filesize}"
+            "📝 <b>Usage:</b>\n\n"
+            "<code>/setcaption Your Caption Here</code>\n\n"
+            "<b>Available Variables:</b>\n"
+            "• <code>{filename}</code>\n"
+            "• <code>{filesize}</code>\n"
+            "• <code>{extension}</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setcaption 📂 {filename}\n💾 Size: {filesize}</code>",
+            parse_mode=ParseMode.HTML
         )
-    
+
     await set_caption(message.from_user.id, text[1])
-    await message.reply_text("✅ Caption Format Saved!")
+    await message.reply_text("✅ Caption Format Saved Successfully!")
 
 
 # ---------------- RECEIVE FILE ---------------- #
 
-@app.on_message(filters.document | filters.video | filters.audio)
+@app.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def ask_new_name(client, message: Message):
+
     if not is_admin(message.from_user.id):
         return
 
@@ -126,15 +140,16 @@ async def ask_new_name(client, message: Message):
     }
 
     await message.reply_text(
-        f"📝 Send New File Name\n\nCurrent Name:\n`{file.file_name}`",
-        parse_mode="markdown"
+        f"📝 <b>Send New File Name</b>\n\nCurrent Name:\n<code>{file.file_name}</code>",
+        parse_mode=ParseMode.HTML
     )
 
 
 # ---------------- RENAME PROCESS ---------------- #
 
-@app.on_message(filters.text & ~filters.command(["start","setthumb","setcaption"]))
+@app.on_message(filters.text & filters.private)
 async def rename_process(client, message):
+
     user_id = message.from_user.id
 
     if not is_admin(user_id):
@@ -148,12 +163,15 @@ async def rename_process(client, message):
 
     msg = await message.reply_text("⚡ Downloading...")
 
-    file_path = await client.download_media(data["file_id"], file_name=new_name)
+    file_path = await client.download_media(
+        data["file_id"],
+        file_name=new_name
+    )
 
     thumb_path = await get_thumbnail(user_id)
     caption_template = await get_caption(user_id)
 
-    file_size_mb = round(data["file_size"] / (1024*1024), 2)
+    file_size_mb = round(data["file_size"] / (1024 * 1024), 2)
     extension = os.path.splitext(new_name)[1]
 
     if caption_template:
@@ -169,13 +187,15 @@ async def rename_process(client, message):
         chat_id=message.chat.id,
         document=file_path,
         thumb=thumb_path if thumb_path else None,
-        caption=caption
+        caption=caption,
+        parse_mode=ParseMode.HTML
     )
 
     os.remove(file_path)
     await msg.delete()
+
     del pending_files[user_id]
 
 
-print("Bot Running...")
+print("🚀 Bot Running Successfully...")
 app.run()

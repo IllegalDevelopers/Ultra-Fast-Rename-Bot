@@ -1,239 +1,76 @@
 import os
-import time
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ParseMode
-from motor.motor_asyncio import AsyncIOMotorClient
+from pyrogram.types import Message
 from config import *
-
-# ---------------- APP INIT ---------------- #
+from database import *
 
 app = Client(
-    "rename-bot",
+    "rename_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-mongo = AsyncIOMotorClient(MONGO_URI)
-db = mongo.rename_bot
-users = db.users
-
-pending_files = {}
-
-# ---------------- ADMIN CHECK ---------------- #
-
-def is_admin(user_id):
-    return user_id in ADMINS
-
-
-# ---------------- DATABASE ---------------- #
-
-async def set_thumbnail(user_id, file_path):
-    await users.update_one(
-        {"_id": user_id},
-        {"$set": {"thumbnail": file_path}},
-        upsert=True
-    )
-
-async def get_thumbnail(user_id):
-    user = await users.find_one({"_id": user_id})
-    return user.get("thumbnail") if user else None
-
-async def set_caption(user_id, caption):
-    await users.update_one(
-        {"_id": user_id},
-        {"$set": {"caption": caption}},
-        upsert=True
-    )
-
-async def get_caption(user_id):
-    user = await users.find_one({"_id": user_id})
-    return user.get("caption") if user else None
-
-
-# ---------------- PROGRESS FUNCTION ---------------- #
-
-async def progress(current, total, progress_msg, start_time, task):
-    now = time.time()
-    diff = now - start_time
-
-    if diff == 0:
-        return
-
-    percentage = current * 100 / total
-    speed = current / diff
-    speed_mb = speed / (1024 * 1024)
-    eta = round((total - current) / speed) if speed > 0 else 0
-
-    bar_length = 20
-    filled = int(bar_length * current // total)
-    bar = "█" * filled + "░" * (bar_length - filled)
-
-    text = (
-        f"🔄 <b>{task}</b>\n\n"
-        f"<code>[{bar}]</code>\n\n"
-        f"📦 {round(current/(1024*1024),2)} / {round(total/(1024*1024),2)} MB\n"
-        f"⚡ {round(speed_mb,2)} MB/s\n"
-        f"⏳ ETA: {eta}s\n"
-        f"📊 {round(percentage,2)}%"
-    )
-
-    try:
-        await progress_msg.edit(text, parse_mode=ParseMode.HTML)
-    except:
-        pass
-
-
-# ---------------- START ---------------- #
-
-@app.on_message(filters.command("start") & filters.private)
+# Start Command
+@app.on_message(filters.command("start"))
 async def start(client, message):
-
-    if not is_admin(message.from_user.id):
-
-        buttons = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("📞 Contact Admin", url="https://t.me/yourusername")]]
-        )
-
-        return await message.reply_text(
-            "🚫 <b>You are not allowed to use this bot.</b>\n\nContact admin for access.",
-            reply_markup=buttons,
-            parse_mode=ParseMode.HTML
-        )
-
     await message.reply_text(
-        "🔥 <b>Super Fast Rename Bot Ready!</b>\n\nSend any file to rename.",
-        parse_mode=ParseMode.HTML
+        "👋 Welcome to Super Fast Rename Bot!\n\n"
+        "Send me a file to rename.\n"
+        "Use:\n"
+        "/setthumb - Reply photo to set thumbnail\n"
+        "/setcaption - Set custom caption"
     )
 
-
-# ---------------- SET THUMB ---------------- #
-
-@app.on_message(filters.command("setthumb") & filters.private)
-async def thumb_info(client, message):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply_text("Send a photo to set as thumbnail.")
-
-
-@app.on_message(filters.photo & filters.private)
-async def save_thumb(client, message):
-    if not is_admin(message.from_user.id):
-        return
-
-    path = await message.download()
-    await set_thumbnail(message.from_user.id, path)
-    await message.reply_text("✅ Thumbnail Saved Successfully (No Quality Loss)")
-
-
-# ---------------- SET CAPTION ---------------- #
-
-@app.on_message(filters.command("setcaption") & filters.private)
-async def set_caption_cmd(client, message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    text = message.text.split(" ", 1)
-
-    if len(text) < 2:
-        return await message.reply_text(
-            "📝 <b>Usage:</b>\n\n"
-            "<code>/setcaption Your Caption Here</code>\n\n"
-            "<b>Variables:</b>\n"
-            "• <code>{filename}</code>\n"
-            "• <code>{filesize}</code>\n"
-            "• <code>{extension}</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-    await set_caption(message.from_user.id, text[1])
-    await message.reply_text("✅ Caption Saved Successfully!")
-
-
-# ---------------- RECEIVE FILE ---------------- #
-
-@app.on_message((filters.document | filters.video | filters.audio) & filters.private)
-async def ask_new_name(client, message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    file = message.document or message.video or message.audio
-
-    pending_files[message.from_user.id] = {
-        "file_id": file.file_id,
-        "file_name": file.file_name,
-        "file_size": file.file_size
-    }
-
-    await message.reply_text(
-        f"📝 <b>Send New File Name</b>\n\nCurrent Name:\n<code>{file.file_name}</code>",
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ---------------- RENAME PROCESS ---------------- #
-
-@app.on_message(filters.text & filters.private)
-async def rename_process(client, message):
-
-    user_id = message.from_user.id
-
-    if not is_admin(user_id):
-        return
-
-    if user_id not in pending_files:
-        return
-
-    data = pending_files[user_id]
-    new_name = message.text.strip()
-
-    progress_msg = await message.reply_text("⚡ Starting...")
-
-    # -------- DOWNLOAD -------- #
-
-    start_time = time.time()
-
-    file_path = await client.download_media(
-        data["file_id"],
-        file_name=new_name,
-        progress=progress,
-        progress_args=(progress_msg, start_time, "Downloading...")
-    )
-
-    # -------- UPLOAD -------- #
-
-    start_time = time.time()
-
-    thumb_path = await get_thumbnail(user_id)
-    caption_template = await get_caption(user_id)
-
-    file_size_mb = round(data["file_size"] / (1024 * 1024), 2)
-    extension = os.path.splitext(new_name)[1]
-
-    if caption_template:
-        caption = caption_template.replace("{filename}", new_name)\
-                                  .replace("{filesize}", f"{file_size_mb} MB")\
-                                  .replace("{extension}", extension)
+# Set Thumbnail
+@app.on_message(filters.command("setthumb") & filters.reply)
+async def set_thumb(client, message):
+    if message.reply_to_message.photo:
+        file_id = message.reply_to_message.photo.file_id
+        await set_thumbnail(message.from_user.id, file_id)
+        await message.reply_text("✅ Custom thumbnail saved!")
     else:
-        caption = new_name
+        await message.reply_text("❌ Reply to a photo.")
 
+# Set Caption
+@app.on_message(filters.command("setcaption"))
+async def set_cap(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("Usage: /setcaption Your Caption Here")
+    
+    caption = message.text.split(" ", 1)[1]
+    await set_caption(message.from_user.id, caption)
+    await message.reply_text("✅ Custom caption saved!")
+
+# Rename File
+@app.on_message(filters.document | filters.video | filters.audio)
+async def rename_file(client, message: Message):
+    user_id = message.from_user.id
+    
+    file = message.document or message.video or message.audio
+    file_name = file.file_name
+    
+    new_name = file_name.replace(" ", "_")  # Simple rename logic
+    
+    thumb = await get_thumbnail(user_id)
+    caption = await get_caption(user_id)
+    
+    msg = await message.reply_text("⚡ Downloading...")
+    
+    file_path = await message.download()
+    
+    os.rename(file_path, new_name)
+    
+    await msg.edit("⚡ Uploading...")
+    
     await client.send_document(
         chat_id=message.chat.id,
-        document=file_path,
-        thumb=thumb_path if thumb_path else None,
-        caption=caption,
-        parse_mode=ParseMode.HTML,
-        progress=progress,
-        progress_args=(progress_msg, start_time, "Uploading...")
+        document=new_name,
+        caption=caption if caption else new_name,
+        thumb=thumb
     )
+    
+    os.remove(new_name)
+    await msg.delete()
 
-    os.remove(file_path)
-    await progress_msg.delete()
-    del pending_files[user_id]
-
-
-print("🚀 Rename Bot Running With Progress Bar...")
 app.run()

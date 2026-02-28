@@ -1,7 +1,8 @@
 pyrogram
 tgcrypto
-motor
-dnspython
 humanize
 hachoir
+motor
+pymongo
+dnspython
 Pillow

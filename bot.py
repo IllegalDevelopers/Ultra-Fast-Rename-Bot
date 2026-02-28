@@ -1,47 +1,64 @@
 import os
 import time
+import asyncio
 import humanize
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH, BOT_TOKEN
 from database import set_thumbnail, get_thumbnail, set_caption, get_caption
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 
 app = Client(
-    "SuperFastRenameBot",
+    "UltraRenameBot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    workers=32  # VPS optimized
 )
 
 pending_files = {}
+last_percentage = {}
 
-# ---------------- PROGRESS FUNCTION ---------------- #
+# ---------------- SAFE PROGRESS FUNCTION ---------------- #
 
 async def progress(current, total, message, start_time, text):
-    now = time.time()
-    diff = now - start_time
 
+    percentage = int(current * 100 / total)
+    message_id = message.id
+
+    # Update only every 5% change
+    if message_id in last_percentage:
+        if percentage - last_percentage[message_id] < 5:
+            return
+
+    last_percentage[message_id] = percentage
+
+    diff = time.time() - start_time
     if diff == 0:
         return
 
-    percentage = current * 100 / total
     speed = current / diff
-    elapsed_time = round(diff)
+
     total_size = humanize.naturalsize(total)
     current_size = humanize.naturalsize(current)
     speed_text = humanize.naturalsize(speed) + "/s"
 
     progress_bar = "█" * int(percentage / 5) + "░" * (20 - int(percentage / 5))
 
-    await message.edit_text(
-        f"{text}\n\n"
-        f"[{progress_bar}] {round(percentage, 2)}%\n\n"
-        f"⚡ Speed: {speed_text}\n"
-        f"📦 {current_size} / {total_size}\n"
-        f"⏳ Time: {elapsed_time}s"
-    )
+    try:
+        await message.edit_text(
+            f"{text}\n\n"
+            f"[{progress_bar}] {percentage}%\n\n"
+            f"⚡ Speed: {speed_text}\n"
+            f"📦 {current_size} / {total_size}"
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except:
+        pass
+
 
 # ---------------- VIDEO DURATION ---------------- #
 
@@ -53,18 +70,20 @@ def get_video_duration(file_path):
     except:
         return 0
 
+
 # ---------------- START ---------------- #
 
 @app.on_message(filters.command("start"))
 async def start_handler(client, message: Message):
     await message.reply_text(
-        "👋 Super Fast Rename Bot Ready!\n\n"
-        "Send file → then use:\n"
-        "/rename newname.ext\n\n"
+        "🚀 Ultra Fast Rename Bot Ready!\n\n"
+        "1️⃣ Send File\n"
+        "2️⃣ Use /rename newname.ext\n\n"
         "Caption Variables:\n"
         "{filename}\n"
         "{filesize}"
     )
+
 
 # ---------------- SETTINGS ---------------- #
 
@@ -76,18 +95,20 @@ async def set_thumb(client, message: Message):
     await message.reply_text("✅ Thumbnail Saved!")
 
 @app.on_message(filters.command("setcaption"))
-async def set_cap(client, message: Message):
+async def set_caption_handler(client, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/setcaption Your Caption")
     await set_caption(message.from_user.id, message.text.split(" ",1)[1])
     await message.reply_text("✅ Caption Saved!")
+
 
 # ---------------- STORE FILE ---------------- #
 
 @app.on_message(filters.document | filters.video | filters.audio)
 async def store_file(client, message: Message):
     pending_files[message.from_user.id] = message
-    await message.reply_text("File received.\nUse:\n/rename newname.ext")
+    await message.reply_text("📁 File Received!\nUse:\n/rename newname.ext")
+
 
 # ---------------- RENAME ---------------- #
 
@@ -172,18 +193,21 @@ async def rename_file(client, message: Message):
                 progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
+        # Cleanup
         os.remove(new_name)
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
 
         del pending_files[user_id]
+        last_percentage.pop(status.id, None)
 
         await status.edit_text("✅ Completed Successfully!")
 
     except Exception as e:
-        await status.edit_text(f"Error:\n{e}")
+        await status.edit_text(f"❌ Error:\n{e}")
+
 
 # ---------------- RUN ---------------- #
 
-print("🚀 Rename Bot With Live Progress Running...")
+print("🚀 Ultra Rename Bot Running Smoothly...")
 app.run()

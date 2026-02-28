@@ -29,6 +29,7 @@ def is_admin(user_id):
 
 async def admin_only(message: Message):
     if not is_admin(message.from_user.id):
+
         buttons = InlineKeyboardMarkup(
             [
                 [
@@ -40,14 +41,17 @@ async def admin_only(message: Message):
             ]
         )
 
-        await message.reply_text(
-            "🚫 This bot is private.\n\n"
-            "Only authorized users can use this bot.",
+        await message.reply_photo(
+            photo="https://i.imgur.com/yourimage.jpg",  # 👈 Yaha apna image URL ya file_id daalo
+            caption=(
+                "🚫 **This bot is private.**\n\n"
+                "Only authorized users can use this bot."
+            ),
             reply_markup=buttons
         )
         return False
-    return True
 
+    return True
 
 # ---------------- SAFE PROGRESS ---------------- #
 

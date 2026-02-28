@@ -42,7 +42,7 @@ async def admin_only(message: Message):
         )
 
         await message.reply_photo(
-            photo="https://i.imgur.com/yourimage.jpg",  # 👈 Yaha apna image URL ya file_id daalo
+            photo="https://www.webopedia.com/wp-content/uploads/2025/01/what-is-an-otp-bot-cover.webp",  # 👈 Yaha apna image URL ya file_id daalo
             caption=(
                 "🚫 **This bot is private.**\n\n"
                 "Only authorized users can use this bot."

@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import humanize
+from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
@@ -15,20 +16,19 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=32  # VPS optimized
+    workers=32
 )
 
 pending_files = {}
 last_percentage = {}
 
-# ---------------- SAFE PROGRESS FUNCTION ---------------- #
+# ---------------- SAFE PROGRESS ---------------- #
 
 async def progress(current, total, message, start_time, text):
 
     percentage = int(current * 100 / total)
     message_id = message.id
 
-    # Update only every 5% change
     if message_id in last_percentage:
         if percentage - last_percentage[message_id] < 5:
             return
@@ -40,7 +40,6 @@ async def progress(current, total, message, start_time, text):
         return
 
     speed = current / diff
-
     total_size = humanize.naturalsize(total)
     current_size = humanize.naturalsize(current)
     speed_text = humanize.naturalsize(speed) + "/s"
@@ -71,6 +70,28 @@ def get_video_duration(file_path):
         return 0
 
 
+# ---------------- THUMBNAIL OPTIMIZER ---------------- #
+
+def process_thumbnail(input_path, user_id):
+    try:
+        img = Image.open(input_path)
+        img = img.convert("RGB")
+
+        width, height = img.size
+
+        # Resize only if larger than Telegram limit
+        if width > 320 or height > 320:
+            img.thumbnail((320, 320), Image.LANCZOS)
+
+        output_path = f"thumb_{user_id}.jpg"
+        img.save(output_path, "JPEG", quality=95)
+
+        return output_path
+
+    except Exception:
+        return None
+
+
 # ---------------- START ---------------- #
 
 @app.on_message(filters.command("start"))
@@ -91,8 +112,22 @@ async def start_handler(client, message: Message):
 async def set_thumb(client, message: Message):
     if not message.reply_to_message.photo:
         return await message.reply_text("Reply to a photo.")
-    await set_thumbnail(message.from_user.id, message.reply_to_message.photo.file_id)
-    await message.reply_text("✅ Thumbnail Saved!")
+
+    file_id = message.reply_to_message.photo.file_id
+
+    # Download immediately to avoid file_reference issue
+    temp_path = await client.download_media(file_id)
+
+    final_thumb = process_thumbnail(temp_path, message.from_user.id)
+
+    os.remove(temp_path)
+
+    if final_thumb:
+        await set_thumbnail(message.from_user.id, final_thumb)
+        await message.reply_text("✅ High Quality Thumbnail Saved!")
+    else:
+        await message.reply_text("❌ Thumbnail processing failed.")
+
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption_handler(client, message: Message):
@@ -139,15 +174,8 @@ async def rename_file(client, message: Message):
 
         os.rename(file_path, new_name)
 
-        thumb_id = await get_thumbnail(user_id)
+        thumb_path = await get_thumbnail(user_id)
         caption_template = await get_caption(user_id)
-
-        thumb_path = None
-        if thumb_id:
-            try:
-                thumb_path = await client.download_media(thumb_id)
-            except:
-                thumb_path = None
 
         file_size = humanize.naturalsize(os.path.getsize(new_name))
 
@@ -167,7 +195,7 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 video=new_name,
                 caption=final_caption,
-                thumb=thumb_path,
+                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                 duration=duration,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
@@ -178,7 +206,7 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 audio=new_name,
                 caption=final_caption,
-                thumb=thumb_path,
+                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
             )
@@ -188,16 +216,12 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 document=new_name,
                 caption=final_caption,
-                thumb=thumb_path,
+                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
-        # Cleanup
         os.remove(new_name)
-        if thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
-
         del pending_files[user_id]
         last_percentage.pop(status.id, None)
 

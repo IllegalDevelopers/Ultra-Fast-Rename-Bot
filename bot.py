@@ -2,11 +2,10 @@ import os
 import time
 import asyncio
 import humanize
-from PIL import Image
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
-from config import API_ID, API_HASH, BOT_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS
 from database import set_thumbnail, get_thumbnail, set_caption, get_caption
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
@@ -21,6 +20,34 @@ app = Client(
 
 pending_files = {}
 last_percentage = {}
+
+# ---------------- ADMIN CHECK ---------------- #
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+
+async def admin_only(message: Message):
+    if not is_admin(message.from_user.id):
+        buttons = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("📢 Join Channel", url="https://t.me/yourchannel"),
+                ],
+                [
+                    InlineKeyboardButton("👑 Contact Admin", url="https://t.me/yourusername")
+                ]
+            ]
+        )
+
+        await message.reply_text(
+            "🚫 This bot is private.\n\n"
+            "Only authorized users can use this bot.",
+            reply_markup=buttons
+        )
+        return False
+    return True
+
 
 # ---------------- SAFE PROGRESS ---------------- #
 
@@ -40,6 +67,7 @@ async def progress(current, total, message, start_time, text):
         return
 
     speed = current / diff
+
     total_size = humanize.naturalsize(total)
     current_size = humanize.naturalsize(current)
     speed_text = humanize.naturalsize(speed) + "/s"
@@ -70,32 +98,14 @@ def get_video_duration(file_path):
         return 0
 
 
-# ---------------- THUMBNAIL OPTIMIZER ---------------- #
-
-def process_thumbnail(input_path, user_id):
-    try:
-        img = Image.open(input_path)
-        img = img.convert("RGB")
-
-        width, height = img.size
-
-        # Resize only if larger than Telegram limit
-        if width > 320 or height > 320:
-            img.thumbnail((320, 320), Image.LANCZOS)
-
-        output_path = f"thumb_{user_id}.jpg"
-        img.save(output_path, "JPEG", quality=95)
-
-        return output_path
-
-    except Exception:
-        return None
-
-
 # ---------------- START ---------------- #
 
 @app.on_message(filters.command("start"))
 async def start_handler(client, message: Message):
+
+    if not await admin_only(message):
+        return
+
     await message.reply_text(
         "🚀 Ultra Fast Rename Bot Ready!\n\n"
         "1️⃣ Send File\n"
@@ -110,29 +120,26 @@ async def start_handler(client, message: Message):
 
 @app.on_message(filters.command("setthumb") & filters.reply)
 async def set_thumb(client, message: Message):
+
+    if not await admin_only(message):
+        return
+
     if not message.reply_to_message.photo:
         return await message.reply_text("Reply to a photo.")
 
-    file_id = message.reply_to_message.photo.file_id
-
-    # Download immediately to avoid file_reference issue
-    temp_path = await client.download_media(file_id)
-
-    final_thumb = process_thumbnail(temp_path, message.from_user.id)
-
-    os.remove(temp_path)
-
-    if final_thumb:
-        await set_thumbnail(message.from_user.id, final_thumb)
-        await message.reply_text("✅ High Quality Thumbnail Saved!")
-    else:
-        await message.reply_text("❌ Thumbnail processing failed.")
+    await set_thumbnail(message.from_user.id, message.reply_to_message.photo.file_id)
+    await message.reply_text("✅ Thumbnail Saved!")
 
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption_handler(client, message: Message):
+
+    if not await admin_only(message):
+        return
+
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/setcaption Your Caption")
+
     await set_caption(message.from_user.id, message.text.split(" ",1)[1])
     await message.reply_text("✅ Caption Saved!")
 
@@ -141,6 +148,10 @@ async def set_caption_handler(client, message: Message):
 
 @app.on_message(filters.document | filters.video | filters.audio)
 async def store_file(client, message: Message):
+
+    if not await admin_only(message):
+        return
+
     pending_files[message.from_user.id] = message
     await message.reply_text("📁 File Received!\nUse:\n/rename newname.ext")
 
@@ -149,6 +160,9 @@ async def store_file(client, message: Message):
 
 @app.on_message(filters.command("rename"))
 async def rename_file(client, message: Message):
+
+    if not await admin_only(message):
+        return
 
     user_id = message.from_user.id
 
@@ -164,7 +178,6 @@ async def rename_file(client, message: Message):
     status = await message.reply_text("Starting...")
 
     try:
-        # -------- DOWNLOAD -------- #
         start_time = time.time()
 
         file_path = await original_message.download(
@@ -174,8 +187,15 @@ async def rename_file(client, message: Message):
 
         os.rename(file_path, new_name)
 
-        thumb_path = await get_thumbnail(user_id)
+        thumb_id = await get_thumbnail(user_id)
         caption_template = await get_caption(user_id)
+
+        thumb_path = None
+        if thumb_id:
+            try:
+                thumb_path = await client.download_media(thumb_id)
+            except:
+                thumb_path = None
 
         file_size = humanize.naturalsize(os.path.getsize(new_name))
 
@@ -185,17 +205,15 @@ async def rename_file(client, message: Message):
         else:
             final_caption = new_name
 
-        # -------- UPLOAD -------- #
         start_time = time.time()
 
         if original_message.video:
             duration = get_video_duration(new_name)
-
             await client.send_video(
                 chat_id=message.chat.id,
                 video=new_name,
                 caption=final_caption,
-                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                thumb=thumb_path,
                 duration=duration,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
@@ -206,7 +224,7 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 audio=new_name,
                 caption=final_caption,
-                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                thumb=thumb_path,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
             )
@@ -216,12 +234,15 @@ async def rename_file(client, message: Message):
                 chat_id=message.chat.id,
                 document=new_name,
                 caption=final_caption,
-                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                thumb=thumb_path,
                 progress=progress,
                 progress_args=(status, start_time, "⬆️ Uploading...")
             )
 
         os.remove(new_name)
+        if thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
+
         del pending_files[user_id]
         last_percentage.pop(status.id, None)
 
@@ -233,5 +254,5 @@ async def rename_file(client, message: Message):
 
 # ---------------- RUN ---------------- #
 
-print("🚀 Ultra Rename Bot Running Smoothly...")
+print("🚀 Admin Protected Rename Bot Running...")
 app.run()
